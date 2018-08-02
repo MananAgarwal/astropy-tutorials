@@ -106,9 +106,9 @@ if release.endswith('dev'):
 
 # Please update these texts to match the name of your package.
 html_theme_options = {
-    'logotext1': 'astro',  # white,  semi-bold
-    'logotext2': 'py',  # orange, light
-    'logotext3': ':tutorials',   # white,  light
+    # 'logotext1': 'astro',
+    # 'logotext2': 'py',
+    # 'logotext3': ':tutorials',
     # 'nosidebar': True
     'globaltoc_depth': 2,
     'navbar_fixed_top': "true",
@@ -173,10 +173,126 @@ html_theme_path = [path.abspath(path.join(path.dirname(__file__), 'themes'))]
 html_theme = 'tutorials-theme'
 html_sidebars = {'tutorials': ['searchbox.html', 'tutorialfilters.html'], 'index': ['searchbox.html', 'localtoc.html']}
 
-# # Custom style overrides
+# Examples gallery sphinx custom plugin
 def setup(app):
     app.add_stylesheet('bootstrap_sandstone.css')
     app.add_stylesheet('astropy.css')  # may also be an URL
+
+    app.add_config_value('example_include_examples', True, 'html')
+
+    app.add_node(examplelist)
+    app.add_node(example,
+                 html=(visit_example_node, depart_example_node),
+                 latex=(visit_example_node, depart_example_node),
+                 text=(visit_example_node, depart_example_node))
+
+    app.add_directive('example', exampleDirective)
+    app.add_directive('examplelist', examplelistDirective)
+    app.connect('doctree-resolved', process_example_nodes)
+    app.connect('env-purge-doc', purge_examples)
+
+    return {'version': '0.1'} #version of the extension
+
+###node classes
+from docutils import nodes
+
+class example(nodes.Admonition, nodes.Element):
+    pass
+
+class examplelist(nodes.General, nodes.Element):
+    pass
+
+def visit_example_node(self, node):
+    self.visit_admonition(node)
+
+def depart_example_node(self, node):
+    self.depart_admonition(node)
+
+###directive classes
+from docutils.parsers.rst import Directive
+
+class examplelistDirective(Directive):
+
+    def run(self):
+        return [examplelist('')]
+
+
+from sphinx.locale import _
+
+class exampleDirective(Directive):
+
+    # this enables content in the directive
+    has_content = True
+
+    def run(self):
+        env = self.state.document.settings.env
+
+        targetid = "example-%d" % env.new_serialno('example')
+        targetnode = nodes.target('', '', ids=[targetid])
+
+        example_node = example('\n'.join(self.content))
+        example_node += nodes.title(_('example'), _('example'))
+        self.state.nested_parse(self.content, self.content_offset, example_node)
+
+        if not hasattr(env, 'example_all_examples'):
+            env.example_all_examples = []
+        env.example_all_examples.append({
+            'docname': env.docname,
+            'lineno': self.lineno,
+            'example': example_node.deepcopy(),
+            'target': targetnode,
+        })
+
+        return [targetnode, example_node]
+
+###event handlers
+def purge_examples(app, env, docname):
+    if not hasattr(env, 'example_all_examples'):
+        return
+    env.example_all_examples = [example for example in env.example_all_examples
+                          if example['docname'] != docname]
+
+def process_example_nodes(app, doctree, fromdocname):
+    if not app.config.example_include_examples:
+        for node in doctree.traverse(example):
+            node.parent.remove(node)
+
+    # Replace all examplelist nodes with a list of the collected examples.
+    # Augment each example with a backlink to the original location.
+    env = app.builder.env
+
+    for node in doctree.traverse(examplelist):
+        if not app.config.example_include_examples:
+            node.replace_self([])
+            continue
+
+        content = []
+
+        for example_info in env.example_all_examples:
+            para = nodes.paragraph()
+            filename = env.doc2path(example_info['docname'], base=None)
+            description = (
+                _('(The original entry is located in %s, line %d and can be found ') %
+                (filename, example_info['lineno']))
+            para += nodes.Text(description, description)
+
+            # Create a reference
+            newnode = nodes.reference('', '')
+            innernode = nodes.emphasis(_('here'), _('here'))
+            newnode['refdocname'] = example_info['docname']
+            newnode['refuri'] = app.builder.get_relative_uri(
+                fromdocname, example_info['docname'])
+            newnode['refuri'] += '#' + example_info['target']['refid']
+            newnode.append(innernode)
+            para += newnode
+            para += nodes.Text('.)', '.)')
+
+            # Insert into the examplelist
+            content.append(example_info['example'])
+            content.append(para)
+
+        node.replace_self(content)
+
 
 # -- Run and convert the notebook files to RST --------------------------------
 
